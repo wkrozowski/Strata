@@ -229,12 +229,6 @@ private def mkBitVecGE (w : Nat) : Expr :=
   mkApp2 (.const ``GE.ge [0]) (mkBitVec w)
          (.app (.const ``instLEBitVec []) (toExpr w))
 
-private def mkBitVecDiv (w : Nat) : Expr :=
-  mkApp4 (.const ``HDiv.hDiv [0, 0, 0])
-         (mkBitVec w) (mkBitVec w) (mkBitVec w)
-         (mkApp2 (.const ``instHDiv [0]) (mkBitVec w)
-                 (.app (.const ``BitVec.instDiv []) (toExpr w)))
-
 private def mkBitVecMod (w : Nat) : Expr :=
   mkApp4 (.const ``HMod.hMod [0, 0, 0])
          (mkBitVec w) (mkBitVec w) (mkBitVec w)
@@ -382,8 +376,10 @@ def translateTerm (t : SMT.Term) : TranslateM (Expr × Expr) := do
     throw m!"Error: 'mod' expects exactly two operands, got '{as.length}'"
   | .app .abs [a] _ =>
     let (_, a) ← translateTerm a
-    let c := mkApp2 mkIntLT a (toExpr (0 : Int))
-    return (mkInt, mkApp5 (.const ``ite [1]) mkInt c (.app (.const ``Classical.propDecidable []) c) (.app mkIntNeg a) a)
+    let zero := toExpr (0 : Int)
+    let c := mkApp2 mkIntLT a zero
+    -- Use `Int.decLt`, the instance `Denote.denoteTerm` elaborates to.
+    return (mkInt, mkApp5 (.const ``ite [1]) mkInt c (mkApp2 (.const ``Int.decLt []) a zero) (.app mkIntNeg a) a)
   | .app .le [x, y] _ =>
     let (_, x) ← translateTerm x
     let (_, y) ← translateTerm y
@@ -484,7 +480,8 @@ def translateTerm (t : SMT.Term) : TranslateM (Expr × Expr) := do
     let (α, x) ← translateTerm x
     let (_, y) ← translateTerm y
     let w ← getBitVecWidth α
-    return (mkBitVec w, mkApp2 (mkBitVecDiv w) x y)
+    -- SMT-LIB `bvudiv` by zero is all ones, unlike `/` on `BitVec` (see `denoteTerm`).
+    return (mkBitVec w, mkApp3 (.const ``BitVec.smtUDiv []) (toExpr w) x y)
   | .app .bvurem [x, y] _ =>
     let (α, x) ← translateTerm x
     let (_, y) ← translateTerm y
@@ -574,6 +571,13 @@ def translateTerm (t : SMT.Term) : TranslateM (Expr × Expr) := do
       expectString γ
       return e
     return (mkString, as.foldl (mkApp2 mkStringAppend) (mkApp2 mkStringAppend a b))
+  -- Options
+  | .none ty =>
+    let α ← translateSort ty
+    return (.app (.const ``Option [0]) α, .app (.const ``Option.none [0]) α)
+  | .some a =>
+    let (α, a) ← translateTerm a
+    return (.app (.const ``Option [0]) α, mkApp2 (.const ``Option.some [0]) α a)
   | t => throw m!"Error: unsupported term '{repr t}'"
 where
   leftAssocOp (op : Expr) (as : List SMT.Term) : TranslateM (Expr × Expr) := do
